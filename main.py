@@ -6,10 +6,17 @@ from firebase_admin import credentials, messaging
 
 app = FastAPI(title="App Alarma API")
 
-# Inicializar Firebase
-cred = credentials.Certificate("serviceAccount.json")
-firebase_admin.initialize_app(cred)
+import os
+import json
 
+# Inicializar Firebase desde variable de entorno
+google_credentials = os.environ.get("GOOGLE_CREDENTIALS")
+if google_credentials:
+    cred_dict = json.loads(google_credentials)
+    cred = credentials.Certificate(cred_dict)
+else:
+    cred = credentials.Certificate("serviceAccount.json")
+firebase_admin.initialize_app(cred)
 # Base de datos temporal en memoria
 alertas = []
 tokens_vecinos = []  # Aquí se guardan los tokens de los celulares
