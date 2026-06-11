@@ -70,10 +70,14 @@ def init_db():
             codigo_unico VARCHAR(20) UNIQUE NOT NULL,
             activo BOOLEAN DEFAULT TRUE,
             creado_en TIMESTAMP DEFAULT NOW()
-              ALTER TABLE barrios 
+        )
+    """)
+
+    # Agregar columnas nuevas si no existen
+    cur.execute("""
+        ALTER TABLE barrios 
         ADD COLUMN IF NOT EXISTS telefono_vigilante VARCHAR(20),
         ADD COLUMN IF NOT EXISTS telefono_presidente VARCHAR(20)
-        )
     """)
 
     # Tabla de usuarios (3 roles)
