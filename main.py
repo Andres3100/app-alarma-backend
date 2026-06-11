@@ -398,24 +398,21 @@ def revocar_sesion(data: RevocarSesionRequest, usuario: dict = Depends(require_r
 # ENDPOINTS ADMIN_BARRIO
 # ──────────────────────────────────────────
 
-@app.post("/barrio/vecinos")
-def crear_vecino(data: CrearVecinoRequest, usuario: dict = Depends(require_rol("admin_barrio"))):
+@app.get("/barrio/vecinos")
+def listar_vecinos(usuario: dict = Depends(require_rol("admin_barrio", "superadmin", "vecino"))):
     conn = get_db()
     cur = conn.cursor()
-
-    password_hash = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
+    barrio_id = usuario["barrio_id"]
     cur.execute("""
-        INSERT INTO usuarios (barrio_id, nombre, email, telefono, casa, password_hash, rol)
-        VALUES (%s, %s, %s, %s, %s, %s, 'vecino') RETURNING id
-    """, (usuario["barrio_id"], data.nombre, data.email, data.telefono, data.casa, password_hash))
-
-    vecino_id = cur.fetchone()["id"]
-    conn.commit()
+        SELECT id, nombre, email, telefono, casa, activo, creado_en
+        FROM usuarios
+        WHERE barrio_id = %s AND rol = 'vecino'
+        ORDER BY casa
+    """, (barrio_id,))
+    vecinos = cur.fetchall()
     cur.close()
     conn.close()
-
-    return {"mensaje": "Vecino registrado", "vecino_id": vecino_id}
-
+    return [dict(v) for v in vecinos]
 
 @app.get("/barrio/vecinos")
 def listar_vecinos(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
