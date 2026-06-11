@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,15 @@ import jwt
 # ──────────────────────────────────────────
 
 app = FastAPI(title="App Alarma API - Multi-Barrio")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 security = HTTPBearer()
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "cambia-esto-en-produccion-por-algo-largo-y-seguro")
