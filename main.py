@@ -565,13 +565,13 @@ def desactivar_alerta(alerta_id: int, usuario: dict = Depends(require_rol("admin
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE alertas SET activa = FALSE
+        DELETE FROM alertas
         WHERE id = %s AND barrio_id = %s
     """, (alerta_id, usuario["barrio_id"]))
     conn.commit()
     cur.close()
     conn.close()
-    return {"mensaje": "Alerta desactivada"}
+    return {"mensaje": "Alerta eliminada"}
 
 
 @app.get("/auth/me")
