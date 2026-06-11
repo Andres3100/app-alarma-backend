@@ -584,7 +584,10 @@ def mi_perfil(usuario: dict = Depends(get_usuario_actual)):
     perfil = cur.fetchone()
     cur.close()
     conn.close()
-    return dict(perfil)@app.get("/barrio/info")
+    return dict(perfil)
+
+
+@app.get("/barrio/info")
 def info_barrio(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
     conn = get_db()
     cur = conn.cursor()
