@@ -576,7 +576,7 @@ def mi_perfil(usuario: dict = Depends(get_usuario_actual)):
     cur = conn.cursor()
     cur.execute("""
         SELECT u.id, u.nombre, u.email, u.telefono, u.casa, u.rol, u.creado_en,
-               b.nombre as barrio_nombre, b.ciudad
+               b.nombre as barrio_nombre, b.ciudad, b.codigo_unico
         FROM usuarios u
         LEFT JOIN barrios b ON b.id = u.barrio_id
         WHERE u.id = %s
