@@ -584,4 +584,12 @@ def mi_perfil(usuario: dict = Depends(get_usuario_actual)):
     perfil = cur.fetchone()
     cur.close()
     conn.close()
-    return dict(perfil)
+    return dict(perfil)@app.get("/barrio/info")
+def info_barrio(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT nombre, direccion, ciudad, codigo_unico FROM barrios WHERE id = %s", (usuario["barrio_id"],))
+    barrio = cur.fetchone()
+    cur.close()
+    conn.close()
+    return dict(barrio)
