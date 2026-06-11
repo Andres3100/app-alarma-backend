@@ -459,6 +459,86 @@ def eliminar_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_b
     cur.close()
     conn.close()
     return {"mensaje": "Vecino eliminado"}
+class RegistroPorCodigoRequest(BaseModel):
+    codigo_unico: str
+    nombre: str
+    email: EmailStr
+    telefono: Optional[str] = None
+    casa: str
+    password: str
+
+
+@app.post("/auth/registro-codigo")
+def registro_por_codigo(data: RegistroPorCodigoRequest):
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Buscar barrio por código
+    cur.execute("SELECT id, activo FROM barrios WHERE codigo_unico = %s", (data.codigo_unico.upper().strip(),))
+    barrio = cur.fetchone()
+    if not barrio:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Código de invitación inválido")
+    if not barrio["activo"]:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=403, detail="El barrio no está activo")
+
+    # Verificar que el email no exista
+    cur.execute("SELECT id FROM usuarios WHERE email = %s", (data.email,))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Este correo ya está registrado")
+
+    # Crear usuario
+    password_hash = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
+    cur.execute("""
+        INSERT INTO usuarios (barrio_id, nombre, email, telefono, casa, password_hash, rol)
+        VALUES (%s, %s, %s, %s, %s, %s, 'vecino') RETURNING id
+    """, (barrio["id"], data.nombre, data.email, data.telefono, data.casa, password_hash))
+    vecino_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"mensaje": "Vecino registrado exitosamente", "vecino_id": vecino_id}
+
+
+class ResetPasswordRequest(BaseModel):
+    nueva_password: str
+
+
+@app.put("/barrio/vecinos/{vecino_id}/reset-password")
+def reset_password(
+    vecino_id: int,
+    data: ResetPasswordRequest,
+    usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))
+):
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Verificar que el vecino pertenece al barrio del admin
+    cur.execute("""
+        SELECT id FROM usuarios
+        WHERE id = %s AND barrio_id = %s AND rol = 'vecino'
+    """, (vecino_id, usuario["barrio_id"]))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Vecino no encontrado")
+
+    password_hash = bcrypt.hashpw(data.nueva_password.encode(), bcrypt.gensalt()).decode()
+    cur.execute("UPDATE usuarios SET password_hash = %s WHERE id = %s", (password_hash, vecino_id))
+
+    # Invalidar refresh tokens del vecino para forzar nuevo login
+    cur.execute("DELETE FROM tokens WHERE usuario_id = %s AND tipo = 'refresh'", (vecino_id,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": "Contraseña actualizada correctamente"}
 # ──────────────────────────────────────────
 # ENDPOINTS VECINOS (y admin)
 # ──────────────────────────────────────────
