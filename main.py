@@ -70,6 +70,9 @@ def init_db():
             codigo_unico VARCHAR(20) UNIQUE NOT NULL,
             activo BOOLEAN DEFAULT TRUE,
             creado_en TIMESTAMP DEFAULT NOW()
+              ALTER TABLE barrios 
+        ADD COLUMN IF NOT EXISTS telefono_vigilante VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS telefono_presidente VARCHAR(20)
         )
     """)
 
@@ -588,11 +591,33 @@ def mi_perfil(usuario: dict = Depends(get_usuario_actual)):
 
 
 @app.get("/barrio/info")
-def info_barrio(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
+def info_barrio(usuario: dict = Depends(require_rol("admin_barrio", "superadmin", "vecino"))):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT nombre, direccion, ciudad, codigo_unico FROM barrios WHERE id = %s", (usuario["barrio_id"],))
+    cur.execute("""
+        SELECT nombre, direccion, ciudad, codigo_unico, 
+               telefono_vigilante, telefono_presidente 
+        FROM barrios WHERE id = %s
+    """, (usuario["barrio_id"],))
     barrio = cur.fetchone()
     cur.close()
     conn.close()
     return dict(barrio)
+
+@app.put("/barrio/contactos")
+def actualizar_contactos(
+    datos: dict,
+    usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))
+):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE barrios SET 
+            telefono_vigilante = %s,
+            telefono_presidente = %s
+        WHERE id = %s
+    """, (datos.get("telefono_vigilante"), datos.get("telefono_presidente"), usuario["barrio_id"]))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": "Contactos actualizados"}
