@@ -432,19 +432,33 @@ def listar_vecinos(usuario: dict = Depends(require_rol("admin_barrio", "superadm
 
 
 @app.delete("/barrio/vecinos/{vecino_id}")
-def desactivar_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_barrio"))):
+def eliminar_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
     conn = get_db()
     cur = conn.cursor()
+    
+    # Verificar que el vecino pertenece al barrio del admin
     cur.execute("""
-        UPDATE usuarios SET activo = FALSE
+        SELECT id FROM usuarios
         WHERE id = %s AND barrio_id = %s AND rol = 'vecino'
     """, (vecino_id, usuario["barrio_id"]))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Vecino no encontrado")
+    
+    # Conservar las alertas pero quitar la referencia al usuario
+    cur.execute("UPDATE alertas SET usuario_id = NULL WHERE usuario_id = %s", (vecino_id,))
+    
+    # Borrar tokens del vecino
+    cur.execute("DELETE FROM tokens WHERE usuario_id = %s", (vecino_id,))
+    
+    # Borrar el vecino
+    cur.execute("DELETE FROM usuarios WHERE id = %s", (vecino_id,))
+    
     conn.commit()
     cur.close()
     conn.close()
-    return {"mensaje": "Vecino desactivado"}
-
-
+    return {"mensaje": "Vecino eliminado"}
 # ──────────────────────────────────────────
 # ENDPOINTS VECINOS (y admin)
 # ──────────────────────────────────────────
