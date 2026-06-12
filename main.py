@@ -252,6 +252,18 @@ def get_usuario_actual(credentials: HTTPAuthorizationCredentials = Depends(secur
     payload = verificar_token(credentials.credentials)
     if payload.get("tipo") != "access":
         raise HTTPException(status_code=401, detail="Se requiere access token")
+    
+    # Verificar que el barrio esté activo (excepto superadmin)
+    if payload.get("rol") != "superadmin" and payload.get("barrio_id"):
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT activo FROM barrios WHERE id = %s", (payload["barrio_id"],))
+        barrio = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not barrio or not barrio["activo"]:
+            raise HTTPException(status_code=403, detail="Tu barrio está suspendido. Contacta al administrador.")
+    
     return payload
 
 
