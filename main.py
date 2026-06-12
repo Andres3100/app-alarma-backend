@@ -14,6 +14,7 @@ import bcrypt
 import jwt
 import secrets
 import string
+
 # ──────────────────────────────────────────
 # CONFIGURACIÓN
 # ──────────────────────────────────────────
@@ -126,7 +127,7 @@ def init_db():
         )
     """)
 
-# Tabla de códigos de activación de barrios
+    # Tabla de códigos de activación de barrios
     cur.execute("""
         CREATE TABLE IF NOT EXISTS codigos_activacion (
             id SERIAL PRIMARY KEY,
@@ -140,9 +141,10 @@ def init_db():
         )
     """)
 
+    # Columna para forzar cambio de contraseña
     cur.execute("""
-    ALTER TABLE usuarios 
-    ADD COLUMN IF NOT EXISTS requires_password_change BOOLEAN DEFAULT FALSE
+        ALTER TABLE usuarios 
+        ADD COLUMN IF NOT EXISTS requires_password_change BOOLEAN DEFAULT FALSE
     """)
 
     # Crear superadmin por defecto si no existe
@@ -203,9 +205,9 @@ class TokenFCMRequest(BaseModel):
 
 class RevocarSesionRequest(BaseModel):
     usuario_id: int
+
 class CrearCodigoRequest(BaseModel):
     notas: Optional[str] = None
-
 
 class ActivarBarrioRequest(BaseModel):
     codigo: str
@@ -216,6 +218,18 @@ class ActivarBarrioRequest(BaseModel):
     email_admin: EmailStr
     telefono_admin: Optional[str] = None
     password_admin: str
+
+class CambiarPasswordRequest(BaseModel):
+    nueva_password: str
+
+class RegistroPorCodigoRequest(BaseModel):
+    codigo_unico: str
+    nombre: str
+    email: EmailStr
+    telefono: Optional[str] = None
+    casa: str
+    password: str
+
 # ──────────────────────────────────────────
 # JWT HELPERS
 # ──────────────────────────────────────────
@@ -294,12 +308,11 @@ def inicio():
 def login(data: LoginRequest):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-    SELECT id, barrio_id, nombre, email, rol, password_hash, activo, requires_password_change
-    FROM usuarios WHERE email = %s
-""", (login_data.email,))
     
-    cur.execute("SELECT * FROM usuarios WHERE email = %s AND activo = TRUE", (data.email,))
+    cur.execute("""
+        SELECT id, barrio_id, nombre, email, rol, password_hash, activo, requires_password_change
+        FROM usuarios WHERE email = %s AND activo = TRUE
+    """, (data.email,))
     usuario = cur.fetchone()
 
     if not usuario or not bcrypt.checkpw(data.password.encode(), usuario["password_hash"].encode()):
@@ -331,28 +344,25 @@ def login(data: LoginRequest):
     conn.close()
 
     return {
-    "access_token": access_token,
-    "refresh_token": refresh_token,
-    "token_type": "bearer",
-    "usuario": {
-        "id": user['id'],
-        "nombre": user['nombre'],
-        "email": user['email'],
-        "rol": user['rol'],
-        "barrio_id": user['barrio_id'],
-        "requires_password_change": user.get('requires_password_change', False)
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "id": usuario["id"],
+        "nombre": usuario["nombre"],
+        "email": usuario["email"],
+        "rol": usuario["rol"],
+        "barrio_id": usuario["barrio_id"],
+        "requires_password_change": usuario.get("requires_password_change", False)
     }
-}
 
-class CambiarPasswordRequest(BaseModel):
-    nueva_password: str
 
 @app.post("/auth/cambiar-password")
-def cambiar_password(data: CambiarPasswordRequest, current_user: dict = Depends(get_current_user)):
+def cambiar_password(data: CambiarPasswordRequest, usuario: dict = Depends(get_usuario_actual)):
     if len(data.nueva_password) < 6:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
     
     password_hash = bcrypt.hashpw(data.nueva_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    user_id = int(usuario["sub"])
     
     conn = get_db()
     cur = conn.cursor()
@@ -361,12 +371,12 @@ def cambiar_password(data: CambiarPasswordRequest, current_user: dict = Depends(
             UPDATE usuarios 
             SET password_hash = %s, requires_password_change = FALSE 
             WHERE id = %s
-        """, (password_hash, current_user['user_id']))
+        """, (password_hash, user_id))
         
         # Invalidar todos los refresh tokens del usuario (seguridad)
         cur.execute(
             "DELETE FROM tokens WHERE usuario_id = %s AND tipo = 'refresh'",
-            (current_user['user_id'],)
+            (user_id,)
         )
         
         conn.commit()
@@ -374,6 +384,7 @@ def cambiar_password(data: CambiarPasswordRequest, current_user: dict = Depends(
     finally:
         cur.close()
         conn.close()
+
 
 @app.post("/auth/refresh")
 def refresh(data: RefreshRequest):
@@ -418,7 +429,7 @@ def crear_barrio(data: CrearBarrioRequest, usuario: dict = Depends(require_rol("
     cur = conn.cursor()
 
     # Generar código único para el barrio
-    import random, string
+    import random
     codigo = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
     # Crear el barrio
@@ -468,6 +479,7 @@ def listar_barrios(usuario: dict = Depends(require_rol("superadmin"))):
     conn.close()
     return [dict(b) for b in barrios]
 
+
 @app.put("/admin/barrios/{barrio_id}/pausar")
 def pausar_barrio(barrio_id: int, usuario: dict = Depends(require_rol("superadmin"))):
     conn = get_db()
@@ -514,6 +526,7 @@ def eliminar_barrio(barrio_id: int, usuario: dict = Depends(require_rol("superad
     conn.close()
     return {"mensaje": "Barrio eliminado completamente"}
 
+
 @app.post("/admin/revocar-sesion")
 def revocar_sesion(data: RevocarSesionRequest, usuario: dict = Depends(require_rol("superadmin", "admin_barrio"))):
     conn = get_db()
@@ -533,6 +546,7 @@ def revocar_sesion(data: RevocarSesionRequest, usuario: dict = Depends(require_r
     cur.close()
     conn.close()
     return {"mensaje": "Sesión revocada. El usuario deberá iniciar sesión de nuevo."}
+
 # ──────────────────────────────────────────
 # CÓDIGOS DE ACTIVACIÓN
 # ──────────────────────────────────────────
@@ -542,7 +556,7 @@ def generar_codigo_activacion(
     data: CrearCodigoRequest,
     usuario: dict = Depends(require_rol("superadmin"))
 ):
-    import random, string
+    import random
     # Formato: VINK-XXXX-XXXX
     parte1 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
     parte2 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -610,7 +624,7 @@ def activar_barrio(data: ActivarBarrioRequest):
         raise HTTPException(status_code=400, detail="Este correo ya está registrado")
 
     # Generar código único del barrio para invitaciones
-    import random, string
+    import random
     codigo_barrio = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
     # Crear el barrio
@@ -664,22 +678,6 @@ def listar_vecinos(usuario: dict = Depends(require_rol("admin_barrio", "superadm
     conn.close()
     return [dict(v) for v in vecinos]
 
-@app.get("/barrio/vecinos")
-def listar_vecinos(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
-    conn = get_db()
-    cur = conn.cursor()
-    barrio_id = usuario["barrio_id"]
-    cur.execute("""
-        SELECT id, nombre, email, telefono, casa, activo, creado_en
-        FROM usuarios
-        WHERE barrio_id = %s AND rol = 'vecino'
-        ORDER BY casa
-    """, (barrio_id,))
-    vecinos = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [dict(v) for v in vecinos]
-
 
 @app.delete("/barrio/vecinos/{vecino_id}")
 def eliminar_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
@@ -709,13 +707,6 @@ def eliminar_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_b
     cur.close()
     conn.close()
     return {"mensaje": "Vecino eliminado"}
-class RegistroPorCodigoRequest(BaseModel):
-    codigo_unico: str
-    nombre: str
-    email: EmailStr
-    telefono: Optional[str] = None
-    casa: str
-    password: str
 
 
 @app.post("/auth/registro-codigo")
@@ -756,16 +747,9 @@ def registro_por_codigo(data: RegistroPorCodigoRequest):
     return {"mensaje": "Vecino registrado exitosamente", "vecino_id": vecino_id}
 
 
-class ResetPasswordRequest(BaseModel):
-    nueva_password: str
-
-
-import secrets
-import string
-
 @app.put("/barrio/vecinos/{vecino_id}/reset-password")
-def reset_password_vecino(vecino_id: int, current_user: dict = Depends(get_admin_barrio)):
-    # Generar contraseña aleatoria de 8 caracteres (legible: sin 0/O/I/l)
+def reset_password_vecino(vecino_id: int, usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))):
+    # Generar contraseña aleatoria de 8 caracteres (legible: sin 0/O/I/l/1)
     alphabet = ''.join(c for c in string.ascii_letters + string.digits if c not in '0OIl1')
     nueva_password = ''.join(secrets.choice(alphabet) for _ in range(8))
     
@@ -777,7 +761,7 @@ def reset_password_vecino(vecino_id: int, current_user: dict = Depends(get_admin
         # Verificar que el vecino pertenece al barrio del admin
         cur.execute(
             "SELECT id, nombre FROM usuarios WHERE id = %s AND barrio_id = %s AND rol = 'vecino'",
-            (vecino_id, current_user['barrio_id'])
+            (vecino_id, usuario["barrio_id"])
         )
         vecino = cur.fetchone()
         if not vecino:
@@ -964,6 +948,7 @@ def info_barrio(usuario: dict = Depends(require_rol("admin_barrio", "superadmin"
     cur.close()
     conn.close()
     return dict(barrio)
+
 
 @app.put("/barrio/contactos")
 def actualizar_contactos(
