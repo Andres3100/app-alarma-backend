@@ -125,6 +125,19 @@ def init_db():
         )
     """)
 
+# Tabla de códigos de activación de barrios
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS codigos_activacion (
+            id SERIAL PRIMARY KEY,
+            codigo VARCHAR(50) UNIQUE NOT NULL,
+            creado_por INTEGER REFERENCES usuarios(id),
+            usado BOOLEAN DEFAULT FALSE,
+            usado_en TIMESTAMP,
+            barrio_id INTEGER REFERENCES barrios(id),
+            notas TEXT,
+            creado_en TIMESTAMP DEFAULT NOW()
+        )
+    """)
     # Crear superadmin por defecto si no existe
     cur.execute("SELECT id FROM usuarios WHERE rol = 'superadmin' LIMIT 1")
     if not cur.fetchone():
@@ -183,7 +196,19 @@ class TokenFCMRequest(BaseModel):
 
 class RevocarSesionRequest(BaseModel):
     usuario_id: int
+class CrearCodigoRequest(BaseModel):
+    notas: Optional[str] = None
 
+
+class ActivarBarrioRequest(BaseModel):
+    codigo: str
+    nombre_barrio: str
+    direccion: Optional[str] = None
+    ciudad: Optional[str] = None
+    nombre_admin: str
+    email_admin: EmailStr
+    telefono_admin: Optional[str] = None
+    password_admin: str
 # ──────────────────────────────────────────
 # JWT HELPERS
 # ──────────────────────────────────────────
@@ -392,7 +417,116 @@ def revocar_sesion(data: RevocarSesionRequest, usuario: dict = Depends(require_r
     cur.close()
     conn.close()
     return {"mensaje": "Sesión revocada. El usuario deberá iniciar sesión de nuevo."}
+# ──────────────────────────────────────────
+# CÓDIGOS DE ACTIVACIÓN
+# ──────────────────────────────────────────
 
+@app.post("/admin/codigos-activacion")
+def generar_codigo_activacion(
+    data: CrearCodigoRequest,
+    usuario: dict = Depends(require_rol("superadmin"))
+):
+    import random, string
+    # Formato: VINK-XXXX-XXXX
+    parte1 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    parte2 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    codigo = f"VINK-{parte1}-{parte2}"
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO codigos_activacion (codigo, creado_por, notas)
+        VALUES (%s, %s, %s) RETURNING id, codigo, creado_en
+    """, (codigo, int(usuario["sub"]), data.notas))
+    nuevo = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {
+        "mensaje": "Código generado",
+        "codigo": nuevo["codigo"],
+        "id": nuevo["id"]
+    }
+
+
+@app.get("/admin/codigos-activacion")
+def listar_codigos_activacion(usuario: dict = Depends(require_rol("superadmin"))):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.id, c.codigo, c.usado, c.usado_en, c.notas, c.creado_en,
+               b.nombre as barrio_nombre
+        FROM codigos_activacion c
+        LEFT JOIN barrios b ON b.id = c.barrio_id
+        ORDER BY c.creado_en DESC
+    """)
+    codigos = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [dict(c) for c in codigos]
+
+
+@app.post("/auth/activar-barrio")
+def activar_barrio(data: ActivarBarrioRequest):
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Verificar código
+    cur.execute("""
+        SELECT id, usado FROM codigos_activacion WHERE codigo = %s
+    """, (data.codigo.strip().upper(),))
+    codigo_db = cur.fetchone()
+
+    if not codigo_db:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Código de activación inválido")
+    if codigo_db["usado"]:
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=403, detail="Este código ya fue utilizado")
+
+    # Verificar que el email no exista
+    cur.execute("SELECT id FROM usuarios WHERE email = %s", (data.email_admin,))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=400, detail="Este correo ya está registrado")
+
+    # Generar código único del barrio para invitaciones
+    import random, string
+    codigo_barrio = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+    # Crear el barrio
+    cur.execute("""
+        INSERT INTO barrios (nombre, direccion, ciudad, codigo_unico)
+        VALUES (%s, %s, %s, %s) RETURNING id
+    """, (data.nombre_barrio, data.direccion, data.ciudad, codigo_barrio))
+    barrio_id = cur.fetchone()["id"]
+
+    # Crear el admin del barrio
+    password_hash = bcrypt.hashpw(data.password_admin.encode(), bcrypt.gensalt()).decode()
+    cur.execute("""
+        INSERT INTO usuarios (barrio_id, nombre, email, telefono, password_hash, rol)
+        VALUES (%s, %s, %s, %s, %s, 'admin_barrio') RETURNING id
+    """, (barrio_id, data.nombre_admin, data.email_admin, data.telefono_admin, password_hash))
+
+    # Marcar código como usado
+    cur.execute("""
+        UPDATE codigos_activacion 
+        SET usado = TRUE, usado_en = NOW(), barrio_id = %s
+        WHERE id = %s
+    """, (barrio_id, codigo_db["id"]))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {
+        "mensaje": "Barrio activado exitosamente",
+        "barrio_id": barrio_id,
+        "codigo_invitacion": codigo_barrio
+    }
 
 # ──────────────────────────────────────────
 # ENDPOINTS ADMIN_BARRIO
