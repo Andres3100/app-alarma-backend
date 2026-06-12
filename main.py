@@ -284,6 +284,15 @@ def login(data: LoginRequest):
         conn.close()
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
+    # Verificar que el barrio esté activo (excepto superadmin que no pertenece a ningún barrio)
+    if usuario["rol"] != "superadmin" and usuario["barrio_id"]:
+        cur.execute("SELECT activo FROM barrios WHERE id = %s", (usuario["barrio_id"],))
+        barrio = cur.fetchone()
+        if not barrio or not barrio["activo"]:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=403, detail="Tu barrio está suspendido. Contacta al administrador.")
+        
     # Crear tokens
     access_token = crear_access_token(usuario["id"], usuario["barrio_id"], usuario["rol"])
     refresh_token, expira = crear_refresh_token(usuario["id"], usuario["barrio_id"], usuario["rol"])
@@ -386,9 +395,13 @@ def listar_barrios(usuario: dict = Depends(require_rol("superadmin"))):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT b.*, COUNT(u.id) as total_vecinos
+        SELECT b.*,
+               COUNT(DISTINCT u.id) FILTER (WHERE u.rol = 'vecino') as total_vecinos,
+               (SELECT nombre FROM usuarios WHERE barrio_id = b.id AND rol = 'admin_barrio' LIMIT 1) as admin_nombre,
+               (SELECT email FROM usuarios WHERE barrio_id = b.id AND rol = 'admin_barrio' LIMIT 1) as admin_email,
+               (SELECT COUNT(*) FROM alertas WHERE barrio_id = b.id) as total_alertas
         FROM barrios b
-        LEFT JOIN usuarios u ON u.barrio_id = b.id AND u.rol = 'vecino'
+        LEFT JOIN usuarios u ON u.barrio_id = b.id
         GROUP BY b.id
         ORDER BY b.creado_en DESC
     """)
@@ -397,6 +410,51 @@ def listar_barrios(usuario: dict = Depends(require_rol("superadmin"))):
     conn.close()
     return [dict(b) for b in barrios]
 
+@app.put("/admin/barrios/{barrio_id}/pausar")
+def pausar_barrio(barrio_id: int, usuario: dict = Depends(require_rol("superadmin"))):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE barrios SET activo = FALSE WHERE id = %s", (barrio_id,))
+    # Invalidar todos los refresh tokens del barrio
+    cur.execute("""
+        DELETE FROM tokens 
+        WHERE tipo = 'refresh' AND usuario_id IN (
+            SELECT id FROM usuarios WHERE barrio_id = %s
+        )
+    """, (barrio_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": "Barrio pausado. Los usuarios no podrán iniciar sesión."}
+
+
+@app.put("/admin/barrios/{barrio_id}/reactivar")
+def reactivar_barrio(barrio_id: int, usuario: dict = Depends(require_rol("superadmin"))):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE barrios SET activo = TRUE WHERE id = %s", (barrio_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": "Barrio reactivado"}
+
+
+@app.delete("/admin/barrios/{barrio_id}")
+def eliminar_barrio(barrio_id: int, usuario: dict = Depends(require_rol("superadmin"))):
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Borrar en orden por las foreign keys
+    cur.execute("DELETE FROM tokens WHERE barrio_id = %s", (barrio_id,))
+    cur.execute("DELETE FROM alertas WHERE barrio_id = %s", (barrio_id,))
+    cur.execute("UPDATE codigos_activacion SET barrio_id = NULL WHERE barrio_id = %s", (barrio_id,))
+    cur.execute("DELETE FROM usuarios WHERE barrio_id = %s", (barrio_id,))
+    cur.execute("DELETE FROM barrios WHERE id = %s", (barrio_id,))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"mensaje": "Barrio eliminado completamente"}
 
 @app.post("/admin/revocar-sesion")
 def revocar_sesion(data: RevocarSesionRequest, usuario: dict = Depends(require_rol("superadmin", "admin_barrio"))):
