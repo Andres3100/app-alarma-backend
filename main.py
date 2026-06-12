@@ -12,7 +12,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import bcrypt
 import jwt
-
+import secrets
+import string
 # ──────────────────────────────────────────
 # CONFIGURACIÓN
 # ──────────────────────────────────────────
@@ -138,6 +139,12 @@ def init_db():
             creado_en TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    cur.execute("""
+    ALTER TABLE usuarios 
+    ADD COLUMN IF NOT EXISTS requires_password_change BOOLEAN DEFAULT FALSE
+    """)
+
     # Crear superadmin por defecto si no existe
     cur.execute("SELECT id FROM usuarios WHERE rol = 'superadmin' LIMIT 1")
     if not cur.fetchone():
@@ -287,7 +294,11 @@ def inicio():
 def login(data: LoginRequest):
     conn = get_db()
     cur = conn.cursor()
-
+    cur.execute("""
+    SELECT id, barrio_id, nombre, email, rol, password_hash, activo, requires_password_change
+    FROM usuarios WHERE email = %s
+""", (login_data.email,))
+    
     cur.execute("SELECT * FROM usuarios WHERE email = %s AND activo = TRUE", (data.email,))
     usuario = cur.fetchone()
 
@@ -320,14 +331,49 @@ def login(data: LoginRequest):
     conn.close()
 
     return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "rol": usuario["rol"],
-        "nombre": usuario["nombre"],
-        "barrio_id": usuario["barrio_id"],
-        "casa": usuario["casa"]
+    "access_token": access_token,
+    "refresh_token": refresh_token,
+    "token_type": "bearer",
+    "usuario": {
+        "id": user['id'],
+        "nombre": user['nombre'],
+        "email": user['email'],
+        "rol": user['rol'],
+        "barrio_id": user['barrio_id'],
+        "requires_password_change": user.get('requires_password_change', False)
     }
+}
 
+class CambiarPasswordRequest(BaseModel):
+    nueva_password: str
+
+@app.post("/auth/cambiar-password")
+def cambiar_password(data: CambiarPasswordRequest, current_user: dict = Depends(get_current_user)):
+    if len(data.nueva_password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+    
+    password_hash = bcrypt.hashpw(data.nueva_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE usuarios 
+            SET password_hash = %s, requires_password_change = FALSE 
+            WHERE id = %s
+        """, (password_hash, current_user['user_id']))
+        
+        # Invalidar todos los refresh tokens del usuario (seguridad)
+        cur.execute(
+            "DELETE FROM tokens WHERE usuario_id = %s AND tipo = 'refresh'",
+            (current_user['user_id'],)
+        )
+        
+        conn.commit()
+        return {"mensaje": "Contraseña actualizada correctamente. Inicia sesión nuevamente."}
+    finally:
+        cur.close()
+        conn.close()
 
 @app.post("/auth/refresh")
 def refresh(data: RefreshRequest):
@@ -714,35 +760,51 @@ class ResetPasswordRequest(BaseModel):
     nueva_password: str
 
 
+import secrets
+import string
+
 @app.put("/barrio/vecinos/{vecino_id}/reset-password")
-def reset_password(
-    vecino_id: int,
-    data: ResetPasswordRequest,
-    usuario: dict = Depends(require_rol("admin_barrio", "superadmin"))
-):
+def reset_password_vecino(vecino_id: int, current_user: dict = Depends(get_admin_barrio)):
+    # Generar contraseña aleatoria de 8 caracteres (legible: sin 0/O/I/l)
+    alphabet = ''.join(c for c in string.ascii_letters + string.digits if c not in '0OIl1')
+    nueva_password = ''.join(secrets.choice(alphabet) for _ in range(8))
+    
+    password_hash = bcrypt.hashpw(nueva_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
     conn = get_db()
     cur = conn.cursor()
-
-    # Verificar que el vecino pertenece al barrio del admin
-    cur.execute("""
-        SELECT id FROM usuarios
-        WHERE id = %s AND barrio_id = %s AND rol = 'vecino'
-    """, (vecino_id, usuario["barrio_id"]))
-    if not cur.fetchone():
+    try:
+        # Verificar que el vecino pertenece al barrio del admin
+        cur.execute(
+            "SELECT id, nombre FROM usuarios WHERE id = %s AND barrio_id = %s AND rol = 'vecino'",
+            (vecino_id, current_user['barrio_id'])
+        )
+        vecino = cur.fetchone()
+        if not vecino:
+            raise HTTPException(status_code=404, detail="Vecino no encontrado")
+        
+        # Actualizar contraseña y marcar cambio obligatorio
+        cur.execute("""
+            UPDATE usuarios 
+            SET password_hash = %s, requires_password_change = TRUE 
+            WHERE id = %s
+        """, (password_hash, vecino_id))
+        
+        # Invalidar todos los refresh tokens del vecino (corta sesiones activas)
+        cur.execute(
+            "DELETE FROM tokens WHERE usuario_id = %s AND tipo = 'refresh'",
+            (vecino_id,)
+        )
+        
+        conn.commit()
+        return {
+            "password_temporal": nueva_password,
+            "mensaje": "Clave temporal generada. Compártela una sola vez con el vecino."
+        }
+    finally:
         cur.close()
         conn.close()
-        raise HTTPException(status_code=404, detail="Vecino no encontrado")
-
-    password_hash = bcrypt.hashpw(data.nueva_password.encode(), bcrypt.gensalt()).decode()
-    cur.execute("UPDATE usuarios SET password_hash = %s WHERE id = %s", (password_hash, vecino_id))
-
-    # Invalidar refresh tokens del vecino para forzar nuevo login
-    cur.execute("DELETE FROM tokens WHERE usuario_id = %s AND tipo = 'refresh'", (vecino_id,))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return {"mensaje": "Contraseña actualizada correctamente"}
+        
 # ──────────────────────────────────────────
 # ENDPOINTS VECINOS (y admin)
 # ──────────────────────────────────────────
