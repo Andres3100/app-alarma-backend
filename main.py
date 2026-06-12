@@ -28,12 +28,33 @@ def publicar_mqtt(topic: str, mensaje: str):
         client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id="backend-vink")
         client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
         client.tls_set()
+        
+        connected = False
+        def on_connect(c, userdata, flags, rc, properties=None):
+            nonlocal connected
+            connected = True
+            print(f"MQTT conectado, rc={rc}")
+        
+        client.on_connect = on_connect
         client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
         client.loop_start()
-        result = client.publish(topic, mensaje)
-        result.wait_for_publish(timeout=5)
+        
+        # Esperar conexión real
+        import time
+        timeout = 5
+        while not connected and timeout > 0:
+            time.sleep(0.1)
+            timeout -= 0.1
+        
+        if connected:
+            result = client.publish(topic, mensaje, qos=1)
+            result.wait_for_publish(timeout=5)
+            print(f"MQTT: publicado en {topic} → {mensaje} (rc={result.rc})")
+        else:
+            print("MQTT: timeout esperando conexión")
+        
+        client.loop_stop()
         client.disconnect()
-        print(f"MQTT: publicado en {topic} → {mensaje}")
     except Exception as e:
         print(f"Error MQTT: {e}")
 
