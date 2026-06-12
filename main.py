@@ -14,6 +14,24 @@ import bcrypt
 import jwt
 import secrets
 import string
+import paho.mqtt.client as mqtt_client
+
+# ── MQTT HiveMQ ───────────────────────────
+MQTT_HOST     = os.environ.get("MQTT_HOST", "")
+MQTT_USER     = os.environ.get("MQTT_USER", "")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
+MQTT_PORT     = int(os.environ.get("MQTT_PORT", "8883"))
+
+def publicar_mqtt(topic: str, mensaje: str):
+    try:
+        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+        client.tls_set()
+        client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
+        client.publish(topic, mensaje)
+        client.disconnect()
+    except Exception as e:
+        print(f"Error MQTT: {e}")
 
 # ──────────────────────────────────────────
 # CONFIGURACIÓN
@@ -880,6 +898,9 @@ def crear_alerta(data: AlertaRequest, usuario: dict = Depends(get_usuario_actual
         except Exception as e:
             print(f"Error enviando notificación: {e}")
 
+    # Publicar en HiveMQ para activar sirena del barrio
+    publicar_mqtt(f"barrio/{barrio_id}/sirena", "ON")
+
     return {"mensaje": "Alerta creada y vecinos notificados", "alerta": nueva_alerta}
 
 
@@ -915,6 +936,10 @@ def desactivar_alerta(alerta_id: int, usuario: dict = Depends(require_rol("admin
     conn.commit()
     cur.close()
     conn.close()
+
+    # Apagar sirena si no quedan alertas activas en el barrio
+    publicar_mqtt(f"barrio/{usuario['barrio_id']}/sirena", "OFF")
+
     return {"mensaje": "Alerta eliminada"}
 
 
