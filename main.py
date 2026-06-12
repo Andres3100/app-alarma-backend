@@ -24,12 +24,16 @@ MQTT_PORT     = int(os.environ.get("MQTT_PORT", "8883"))
 
 def publicar_mqtt(topic: str, mensaje: str):
     try:
-        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
+        print(f"MQTT: conectando a {MQTT_HOST}:{MQTT_PORT}")
+        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id="backend-vink")
         client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
         client.tls_set()
         client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
-        client.publish(topic, mensaje)
+        client.loop_start()
+        result = client.publish(topic, mensaje)
+        result.wait_for_publish(timeout=5)
         client.disconnect()
+        print(f"MQTT: publicado en {topic} → {mensaje}")
     except Exception as e:
         print(f"Error MQTT: {e}")
 
